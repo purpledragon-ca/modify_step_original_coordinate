@@ -1,0 +1,37 @@
+# CAD/model payloads
+*.step
+*.STEP
+*.stp
+*.STP
+*.stl
+*.STL
+*.usd
+*.USD
+*.usda
+*.USDA
+*.usdc
+*.USDC
+
+# Archives and large local bundles
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Generated reports / exports
+*_transform.json
+*_prims.csv
+position.csv
+out.csv
+scence_out.csv
+positions_output.json
+component_names.txt
+
+# Python / test cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local tool state
+.codex
+.claude/
