@@ -18,15 +18,6 @@
 *.tar.gz
 *.tgz
 
-# Generated reports / exports
-*_transform.json
-*_prims.csv
-position.csv
-out.csv
-scence_out.csv
-positions_output.json
-component_names.txt
-
 # Python / test cache
 __pycache__/
 *.py[cod]

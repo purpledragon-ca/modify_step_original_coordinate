@@ -56,6 +56,13 @@ from OCP.Bnd import Bnd_Box
 from OCP.BRepBndLib import BRepBndLib
 from OCP.TopoDS import TopoDS
 
+try:
+    from get_step_component_positions import (
+        extract_component_positions as _extract_component_positions,
+    )
+except Exception:
+    _extract_component_positions = None
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -90,6 +97,12 @@ class JointFeature:
     axis_direction: Tuple[float, float, float]
     face_ids: List[int] = field(default_factory=list)
     radius: Optional[float] = None
+
+@dataclass
+class ComponentPosition:
+    name: str
+    center: Tuple[float, float, float]
+    bbox: Tuple[float, float, float, float, float, float]
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +164,80 @@ def detect_step_unit(path: str) -> str:
         return "inch"
 
     return "mm"   # default
+
+
+# ---------------------------------------------------------------------------
+# Component position extraction
+# ---------------------------------------------------------------------------
+
+def extract_component_positions(step_path: str) -> List[ComponentPosition]:
+    """Use get_step_component_positions.py to read component bbox centers."""
+    if _extract_component_positions is None:
+        return []
+
+    try:
+        rows = _extract_component_positions(step_path)
+    except Exception as exc:
+        print(f"Warning: component position extraction failed: {exc}",
+              file=sys.stderr)
+        return []
+
+    components: List[ComponentPosition] = []
+    for row in rows:
+        try:
+            center = tuple(float(v) for v in row["center"])
+            bbox = tuple(float(v) for v in row["bbox"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if len(center) != 3 or len(bbox) != 6:
+            continue
+        components.append(ComponentPosition(
+            name=str(row.get("name", "")),
+            center=center,
+            bbox=bbox,
+        ))
+    return components
+
+
+def component_bbox_bottom_proposal(
+    components: List[ComponentPosition],
+) -> Optional[Proposal]:
+    """
+    Build a bottom-center proposal from component bounding boxes.
+
+    get_step_component_positions.py stores bbox as
+    (xmin, xmax, ymin, ymax, zmin, zmax), in source STEP coordinates.
+    """
+    if not components:
+        return None
+
+    xmin = min(c.bbox[0] for c in components)
+    xmax = max(c.bbox[1] for c in components)
+    ymin = min(c.bbox[2] for c in components)
+    ymax = max(c.bbox[3] for c in components)
+    zmin = min(c.bbox[4] for c in components)
+
+    return Proposal(
+        method="component_bbox",
+        label="Component bounding-box bottom center",
+        center=((xmin + xmax) / 2.0, (ymin + ymax) / 2.0, zmin),
+        z_axis=(0.0, 0.0, 1.0),
+        confidence=0.7,
+        face_ids=[],
+    )
+
+
+def merge_component_proposal(
+    proposals: List[Proposal],
+    components: List[ComponentPosition],
+) -> List[Proposal]:
+    """Add component-derived proposal without disturbing stronger face hits."""
+    proposal = component_bbox_bottom_proposal(components)
+    if proposal is None:
+        return proposals
+    merged = [*proposals, proposal]
+    merged.sort(key=lambda p: -p.confidence)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -715,7 +802,8 @@ def export_transformed_step(step_path, origin, z_axis, output_path,
 # CLI output helpers
 # ---------------------------------------------------------------------------
 
-def print_results(filepath, faces, proposals, features, unit="mm"):
+def print_results(filepath, faces, proposals, features, unit="mm",
+                  components: Optional[List[ComponentPosition]] = None):
     name = os.path.basename(filepath)
     np_ = sum(1 for f in faces if f.surface_type=="plane")
     nc  = sum(1 for f in faces if f.surface_type=="cylinder")
@@ -740,6 +828,9 @@ def print_results(filepath, faces, proposals, features, unit="mm"):
             print(f"\n  [{jf.type}]")
             print(f"    Axis origin: ({jf.axis_origin[0]:.1f}, {jf.axis_origin[1]:.1f}, {jf.axis_origin[2]:.1f})")
             if jf.radius: print(f"    Radius: {jf.radius:.3f}")
+    if components:
+        print(f"\n  --- Component Positions ---")
+        print(f"  {len(components)} component bbox center(s) extracted")
     print()
 
 
