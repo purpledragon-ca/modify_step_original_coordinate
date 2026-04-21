@@ -21,7 +21,6 @@ import math
 import os
 import re
 import sys
-import tempfile
 import traceback
 import webbrowser
 from dataclasses import dataclass, field, asdict
@@ -573,6 +572,28 @@ def trsf_to_record(trsf, origin, z_axis, x_rot_deg, unit, source_file):
     }
 
 
+def default_processed_export_paths(step_path: str) -> Tuple[Path, Path]:
+    """Return default STEP/JSON export paths under ../processed from input."""
+    source = Path(step_path).resolve()
+    out_dir = source.parent.parent / "processed"
+    stem = source.stem
+    return (
+        out_dir / f"{stem}_centered.step",
+        out_dir / f"{stem}_transform.json",
+    )
+
+
+def transform_record_path_for_export(
+    step_path: str,
+    export_step_path: str,
+) -> Path:
+    default_step, default_record = default_processed_export_paths(step_path)
+    export_path = Path(export_step_path)
+    if export_path.resolve() == default_step:
+        return default_record
+    return export_path.with_name(f"{export_path.stem}_transform.json")
+
+
 def _detect_step_schema(path: str) -> str:
     """Read FILE_SCHEMA from a STEP file header to match on export."""
     with open(path, "r", errors="replace") as f:
@@ -693,7 +714,8 @@ def _normalize_step_real_precision(path: str, decimal_places: int):
         f.write("".join(out))
 
 
-def _export_transformed_step_xcaf(step_path, trsf, output_path, schema):
+def _export_transformed_step_xcaf(step_path, trsf, output_path, schema,
+                                  surfacecurve_mode=0, write_props=False):
     """Transform an XCAF STEP document so product/component names survive."""
     doc = TDocStd_Document(TCollection_ExtendedString("XmlXCAF"))
     reader = STEPCAFControl_Reader()
@@ -760,8 +782,9 @@ def _export_transformed_step_xcaf(step_path, trsf, output_path, schema):
     writer.SetNameMode(True)
     writer.SetColorMode(True)
     writer.SetLayerMode(True)
-    writer.SetPropsMode(True)
+    writer.SetPropsMode(bool(write_props))
     Interface_Static.SetCVal_s("write.step.schema", schema)
+    Interface_Static.SetIVal_s("write.surfacecurve.mode", int(surfacecurve_mode))
 
     if not _with_suppressed_stdout(lambda: writer.Transfer(doc, STEPControl_AsIs)):
         return False
@@ -770,13 +793,21 @@ def _export_transformed_step_xcaf(step_path, trsf, output_path, schema):
 
 
 def export_transformed_step(step_path, origin, z_axis, output_path,
-                            x_rot_deg=0, unit="mm"):
+                            x_rot_deg=0, unit="mm",
+                            decimal_places=8, surfacecurve_mode=0,
+                            write_props=False):
     """Transform via OCC (correct for assemblies). Returns (ok, record)."""
     trsf = build_transform(origin, z_axis, x_rot_deg)
     schema = _detect_step_schema(step_path)
-    decimal_places = _detect_step_decimal_places(step_path)
+    if decimal_places is None:
+        decimal_places = _detect_step_decimal_places(step_path)
+    else:
+        decimal_places = min(_detect_step_decimal_places(step_path),
+                             int(decimal_places))
 
-    ok = _export_transformed_step_xcaf(step_path, trsf, output_path, schema)
+    ok = _export_transformed_step_xcaf(
+        step_path, trsf, output_path, schema,
+        surfacecurve_mode=surfacecurve_mode, write_props=write_props)
     if not ok:
         shape = load_step(step_path)
         builder = BRepBuilderAPI_Transform(shape, trsf, True)
@@ -785,6 +816,8 @@ def export_transformed_step(step_path, origin, z_axis, output_path,
 
         writer = STEPControl_Writer()
         Interface_Static.SetCVal_s("write.step.schema", schema)
+        Interface_Static.SetIVal_s("write.surfacecurve.mode",
+                                   int(surfacecurve_mode))
         _with_suppressed_stdout(
             lambda: writer.Transfer(new_shape, STEPControl_AsIs))
         ok = _with_suppressed_stdout(
@@ -1275,31 +1308,36 @@ class _Handler(BaseHTTPRequestHandler):
         origin = tuple(body["origin"])
         z_axis = tuple(body["z_axis"])
         x_rot_deg = int(body.get("x_rot_deg", 0))
+        decimals = body.get("decimals", getattr(self, "_decimals", 8))
+        sc_mode = body.get("surfacecurve_mode",
+                           getattr(self, "_surfacecurve_mode", 0))
+        write_props = body.get("write_props",
+                               getattr(self, "_write_props", False))
 
-        fd, tmp = tempfile.mkstemp(suffix=".step")
-        os.close(fd)
-        try:
-            ok, _ = export_transformed_step(
-                self._step_path, origin, z_axis, tmp,
-                x_rot_deg=x_rot_deg, unit=self._unit)
-            if not ok:
-                self._respond(500, "text/plain", b"STEP write failed")
-                return
-            with open(tmp, "rb") as f:
-                data = f.read()
-            stem = Path(self._step_path).stem
-            fname = f"{stem}_centered.step"
-            self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Disposition",
-                             f'attachment; filename="{fname}"')
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-            print(f"  Exported {fname} ({len(data)} bytes)")
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
+        output_path, _ = default_processed_export_paths(self._step_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        ok, _ = export_transformed_step(
+            self._step_path, origin, z_axis, output_path,
+            x_rot_deg=x_rot_deg, unit=self._unit,
+            decimal_places=decimals, surfacecurve_mode=sc_mode,
+            write_props=write_props)
+        if not ok:
+            self._respond(500, "text/plain", b"STEP write failed")
+            return
+
+        with open(output_path, "rb") as f:
+            data = f.read()
+        fname = output_path.name
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{fname}"')
+        self.send_header("X-Export-Path", str(output_path))
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        print(f"  Exported {output_path} ({len(data)} bytes)")
 
     def _handle_transform_record(self):
         body = self._read_body()
@@ -1310,12 +1348,16 @@ class _Handler(BaseHTTPRequestHandler):
         record = trsf_to_record(trsf, origin, z_axis, x_rot_deg,
                                 self._unit, self._step_path)
         payload = json.dumps(record, indent=2).encode()
-        stem = Path(self._step_path).stem
-        fname = f"{stem}_transform.json"
+        _, record_path = default_processed_export_paths(self._step_path)
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(record_path, "wb") as f:
+            f.write(payload)
+        fname = record_path.name
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Disposition",
                          f'attachment; filename="{fname}"')
+        self.send_header("X-Export-Path", str(record_path))
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -1336,7 +1378,9 @@ class _Handler(BaseHTTPRequestHandler):
 # launch_ui
 # ---------------------------------------------------------------------------
 
-def launch_ui(step_path: str, port: int = 8765):
+def launch_ui(step_path: str, port: int = 8765,
+              decimals: int = 8, surfacecurve_mode: int = 0,
+              write_props: bool = False):
     print(f"Loading {step_path} ...")
     shape = load_step(step_path)
     unit = detect_step_unit(step_path)
@@ -1362,6 +1406,9 @@ def launch_ui(step_path: str, port: int = 8765):
     _Handler._shape = shape
     _Handler._step_path = step_path
     _Handler._unit = unit
+    _Handler._decimals = decimals
+    _Handler._surfacecurve_mode = surfacecurve_mode
+    _Handler._write_props = write_props
     _Handler._model_data = {
         "filename": os.path.basename(step_path),
         "unit": unit,
@@ -1398,11 +1445,22 @@ def main():
                     help="Launch interactive 3D viewer")
     ap.add_argument("-o", "--output", metavar="FILE",
                     help="Save analysis JSON")
-    ap.add_argument("-e", "--export-step", metavar="FILE",
-                    help="Auto-export transformed STEP (best proposal)")
+    ap.add_argument("-e", "--export-step", nargs="?", const="",
+                    metavar="FILE",
+                    help=("Auto-export transformed STEP (best proposal). "
+                          "Defaults to ../processed/<name>_centered.step"))
     ap.add_argument("--x-rotate", type=int, default=0, metavar="DEG",
                     help="Rotate around Z by DEG degrees (e.g. 90, 180, 270)")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--decimals", type=int, default=8, metavar="N",
+                    help="Cap exported real-literal decimal places (default 8)")
+    ap.add_argument("--surfacecurve-mode", type=int, default=0,
+                    choices=[0, 1, 2, 3], metavar="M",
+                    help=("OCC write.surfacecurve.mode: 0=pcurves only "
+                          "(smallest), 1=3D+pcurve, 2=3D only, 3=both. "
+                          "Default 0."))
+    ap.add_argument("--write-props", action="store_true",
+                    help="Include validation properties (bigger file)")
     args = ap.parse_args()
 
     if not os.path.isfile(args.step_file):
@@ -1410,7 +1468,10 @@ def main():
         sys.exit(1)
 
     if args.ui:
-        launch_ui(args.step_file, args.port)
+        launch_ui(args.step_file, args.port,
+                  decimals=args.decimals,
+                  surfacecurve_mode=args.surfacecurve_mode,
+                  write_props=args.write_props)
         return
 
     print(f"Loading {args.step_file} ...")
@@ -1433,20 +1494,27 @@ def main():
             json.dump(result, f, indent=2)
         print(f"Analysis saved to {args.output}")
 
-    if args.export_step:
+    if args.export_step is not None:
         if not proposals:
             print("Error: no proposal found; use --ui", file=sys.stderr)
             sys.exit(1)
         best = proposals[0]
+        export_path = Path(args.export_step) if args.export_step \
+            else default_processed_export_paths(args.step_file)[0]
+        export_path.parent.mkdir(parents=True, exist_ok=True)
         print(f"Applying transform ({best.label}, x_rotate={args.x_rotate}) ...")
         ok, record = export_transformed_step(
-            args.step_file, best.center, best.z_axis, args.export_step,
-            x_rot_deg=args.x_rotate, unit=unit)
+            args.step_file, best.center, best.z_axis, export_path,
+            x_rot_deg=args.x_rotate, unit=unit,
+            decimal_places=args.decimals,
+            surfacecurve_mode=args.surfacecurve_mode,
+            write_props=args.write_props)
         if ok:
-            rec_path = args.export_step.replace(".step", "_transform.json")
+            rec_path = transform_record_path_for_export(
+                args.step_file, str(export_path))
             with open(rec_path, "w") as f:
                 json.dump(record, f, indent=2)
-            print(f"Exported: {args.export_step}")
+            print(f"Exported: {export_path}")
             print(f"Record:   {rec_path}")
         else:
             print("Error: STEP export failed", file=sys.stderr)
