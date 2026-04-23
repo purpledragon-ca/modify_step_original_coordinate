@@ -1276,6 +1276,10 @@ class _Handler(BaseHTTPRequestHandler):
     _shape = None
     _step_path = None
     _unit = "mm"
+    _decimals = 8
+    _surfacecurve_mode = 0
+    _write_props = False
+    _busy = False
 
     def do_GET(self):
         if self.path == "/":
@@ -1375,51 +1379,69 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 # ---------------------------------------------------------------------------
+# reload_step
+# ---------------------------------------------------------------------------
+
+def reload_step(step_path: str,
+                decimals: int = 8,
+                surfacecurve_mode: int = 0,
+                write_props: bool = False) -> dict:
+    """Parse a STEP file and replace _Handler class state.
+
+    Extracted from `launch_ui` so it can be called from an HTTP handler
+    without restarting the process. Returns the newly assigned
+    `_Handler._model_data` dict.
+
+    Raises FileNotFoundError if `step_path` does not exist.
+    """
+    if not os.path.isfile(step_path):
+        raise FileNotFoundError(step_path)
+
+    _Handler._busy = True
+    try:
+        shape = load_step(step_path)
+        unit = detect_step_unit(step_path)
+        faces = analyze_faces(shape)
+        meshes = triangulate_faces(shape)
+        proposals = find_bottom_center_rules(faces)
+        features = find_joint_features(faces)
+
+        bb = Bnd_Box()
+        BRepBndLib.Add_s(shape, bb)
+        xmin, ymin, zmin, xmax, ymax, zmax = bb.Get()
+
+        _Handler._shape = shape
+        _Handler._step_path = step_path
+        _Handler._unit = unit
+        _Handler._decimals = decimals
+        _Handler._surfacecurve_mode = surfacecurve_mode
+        _Handler._write_props = write_props
+        _Handler._model_data = {
+            "filename": os.path.basename(step_path),
+            "unit": unit,
+            "faces": [asdict(f) for f in faces],
+            "meshes": meshes,
+            "proposals": [asdict(p) for p in proposals],
+            "features": [asdict(f) for f in features],
+            "bbox": {"min": [xmin, ymin, zmin], "max": [xmax, ymax, zmax]},
+        }
+
+        print_results(step_path, faces, proposals, features, unit)
+        return _Handler._model_data
+    finally:
+        _Handler._busy = False
+
+
+# ---------------------------------------------------------------------------
 # launch_ui
 # ---------------------------------------------------------------------------
 
 def launch_ui(step_path: str, port: int = 8765,
               decimals: int = 8, surfacecurve_mode: int = 0,
               write_props: bool = False):
-    print(f"Loading {step_path} ...")
-    shape = load_step(step_path)
-    unit = detect_step_unit(step_path)
-    print(f"  Unit: {unit}")
-
-    print("Analyzing faces ...")
-    faces = analyze_faces(shape)
-    print(f"  {len(faces)} faces")
-
-    print("Triangulating ...")
-    meshes = triangulate_faces(shape)
-
-    print("Detecting bottom center ...")
-    proposals = find_bottom_center_rules(faces)
-
-    print("Detecting joint features ...")
-    features = find_joint_features(faces)
-
-    bb = Bnd_Box()
-    BRepBndLib.Add_s(shape, bb)
-    xmin, ymin, zmin, xmax, ymax, zmax = bb.Get()
-
-    _Handler._shape = shape
-    _Handler._step_path = step_path
-    _Handler._unit = unit
-    _Handler._decimals = decimals
-    _Handler._surfacecurve_mode = surfacecurve_mode
-    _Handler._write_props = write_props
-    _Handler._model_data = {
-        "filename": os.path.basename(step_path),
-        "unit": unit,
-        "faces": [asdict(f) for f in faces],
-        "meshes": meshes,
-        "proposals": [asdict(p) for p in proposals],
-        "features": [asdict(f) for f in features],
-        "bbox": {"min": [xmin, ymin, zmin], "max": [xmax, ymax, zmax]},
-    }
-
-    print_results(step_path, faces, proposals, features, unit)
+    reload_step(step_path, decimals=decimals,
+                surfacecurve_mode=surfacecurve_mode,
+                write_props=write_props)
 
     url = f"http://localhost:{port}"
     print(f"Viewer at {url}")
