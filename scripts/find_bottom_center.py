@@ -21,6 +21,7 @@ import math
 import os
 import re
 import sys
+import time
 import traceback
 import webbrowser
 from dataclasses import dataclass, field, asdict
@@ -1382,7 +1383,12 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _handle_load(self):
-        body = self._read_body()
+        try:
+            body = self._read_body()
+        except (ValueError, UnicodeDecodeError):
+            payload = {"ok": False, "error": "invalid JSON body"}
+            self._respond(400, "application/json", json.dumps(payload).encode())
+            return
         path = body.get("path") if isinstance(body, dict) else None
         if not path or not isinstance(path, str):
             payload = {"ok": False, "error": "path required"}
@@ -1395,8 +1401,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._respond(200, "application/json", json.dumps(payload).encode())
             return
 
-        import time as _time
-        t0 = _time.monotonic()
+        t0 = time.monotonic()
         try:
             reload_step(path)
         except FileNotFoundError:
@@ -1408,7 +1413,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._respond(500, "application/json", json.dumps(payload).encode())
             return
 
-        elapsed = _time.monotonic() - t0
+        elapsed = time.monotonic() - t0
         payload = {"ok": True, "loaded": path, "elapsed_s": elapsed}
         self._respond(200, "application/json", json.dumps(payload).encode())
 

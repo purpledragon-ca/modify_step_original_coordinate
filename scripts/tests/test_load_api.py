@@ -68,6 +68,7 @@ def test_load_endpoint_parses_and_sets_state(mock_occ, sample_step_path):
     assert status == 200, body
     assert body["ok"] is True
     assert body["loaded"] == sample_step_path
+    assert isinstance(body.get("elapsed_s"), (int, float))
 
     status2, loaded = _call_handler("GET", "/api/loaded")
     assert loaded["path"] == sample_step_path
@@ -78,6 +79,16 @@ def test_load_missing_path_returns_400(mock_occ):
     req = json.dumps({"path": "/nope.step"}).encode()
     status, body = _call_handler("POST", "/api/load", req)
     assert status == 400
+    assert body.get("ok") is False
+    assert "error" in body
+
+
+def test_load_malformed_body_returns_400(mock_occ):
+    # Body is not valid JSON — must surface as 400 JSON, not a 500 traceback.
+    status, body = _call_handler("POST", "/api/load", b"not json at all")
+    assert status == 400
+    assert body.get("ok") is False
+    assert "error" in body
 
 
 def test_load_same_path_twice_short_circuits(mock_occ, sample_step_path):
