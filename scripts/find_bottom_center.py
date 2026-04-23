@@ -1489,7 +1489,8 @@ def reload_step(step_path: str,
 
 def launch_ui(step_path: str, port: int = 8765,
               decimals: int = 8, surfacecurve_mode: int = 0,
-              write_props: bool = False):
+              write_props: bool = False,
+              open_browser: bool = True):
     reload_step(step_path, decimals=decimals,
                 surfacecurve_mode=surfacecurve_mode,
                 write_props=write_props)
@@ -1497,7 +1498,8 @@ def launch_ui(step_path: str, port: int = 8765,
     url = f"http://localhost:{port}"
     print(f"Viewer at {url}")
     print("Press Ctrl+C to stop.\n")
-    webbrowser.open(url)
+    if open_browser:
+        webbrowser.open(url)
     server = HTTPServer(("0.0.0.0", port), _Handler)
     try:
         server.serve_forever()
@@ -1516,6 +1518,9 @@ def main():
     ap.add_argument("step_file", help="Path to .step file")
     ap.add_argument("--ui", action="store_true",
                     help="Launch interactive 3D viewer")
+    ap.add_argument("--no-browser", action="store_true",
+                    help="With --ui, do not auto-open a browser tab "
+                         "(useful when the wizard manages tabs itself)")
     ap.add_argument("-o", "--output", metavar="FILE",
                     help="Save analysis JSON")
     ap.add_argument("-e", "--export-step", nargs="?", const="",
@@ -1544,7 +1549,8 @@ def main():
         launch_ui(args.step_file, args.port,
                   decimals=args.decimals,
                   surfacecurve_mode=args.surfacecurve_mode,
-                  write_props=args.write_props)
+                  write_props=args.write_props,
+                  open_browser=not args.no_browser)
         return
 
     print(f"Loading {args.step_file} ...")
