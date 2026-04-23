@@ -1,3 +1,5 @@
+import pytest
+
 import find_bottom_center as fbc
 
 
@@ -39,6 +41,5 @@ def test_reload_step_sets_busy_only_during_call(sample_step_path, mock_occ):
 
 
 def test_reload_step_missing_file_raises(mock_occ):
-    import pytest
     with pytest.raises(FileNotFoundError):
         fbc.reload_step("/does/not/exist.step")

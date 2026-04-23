@@ -1,4 +1,6 @@
-"""Test fixtures. OCC is mocked so tests run without pythonocc installed."""
+"""Test fixtures. OCC call sites are monkeypatched in `mock_occ` so tests don't
+exercise real OpenCASCADE parsing — but importing `find_bottom_center` itself
+still requires OCP to be importable (its top-level imports are not guarded)."""
 
 from pathlib import Path
 import sys
