@@ -1287,6 +1287,19 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/model-data":
             self._respond(200, "application/json",
                           json.dumps(self._model_data).encode())
+        elif self.path == "/api/health":
+            payload = {
+                "ok": True,
+                "satellite": "modify",
+                "busy": bool(_Handler._busy),
+                "loaded": _Handler._step_path,
+            }
+            self._respond(200, "application/json", json.dumps(payload).encode())
+        elif self.path == "/api/loaded":
+            fn = (os.path.basename(_Handler._step_path)
+                  if _Handler._step_path else None)
+            payload = {"path": _Handler._step_path, "filename": fn}
+            self._respond(200, "application/json", json.dumps(payload).encode())
         else:
             self._respond(404, "text/plain", b"Not found")
 
@@ -1296,6 +1309,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._handle_export_step()
             elif self.path == "/api/transform-record":
                 self._handle_transform_record()
+            elif self.path == "/api/load":
+                self._handle_load()
             else:
                 self._respond(404, "text/plain", b"Not found")
         except Exception:
@@ -1365,6 +1380,37 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _handle_load(self):
+        body = self._read_body()
+        path = body.get("path") if isinstance(body, dict) else None
+        if not path or not isinstance(path, str):
+            payload = {"ok": False, "error": "path required"}
+            self._respond(400, "application/json", json.dumps(payload).encode())
+            return
+
+        # Short-circuit: already loaded this file.
+        if _Handler._step_path == path and _Handler._model_data is not None:
+            payload = {"ok": True, "loaded": path, "elapsed_s": 0.0}
+            self._respond(200, "application/json", json.dumps(payload).encode())
+            return
+
+        import time as _time
+        t0 = _time.monotonic()
+        try:
+            reload_step(path)
+        except FileNotFoundError:
+            payload = {"ok": False, "error": f"file not found: {path}"}
+            self._respond(400, "application/json", json.dumps(payload).encode())
+            return
+        except Exception as e:
+            payload = {"ok": False, "error": str(e)}
+            self._respond(500, "application/json", json.dumps(payload).encode())
+            return
+
+        elapsed = _time.monotonic() - t0
+        payload = {"ok": True, "loaded": path, "elapsed_s": elapsed}
+        self._respond(200, "application/json", json.dumps(payload).encode())
 
     def _respond(self, code, ctype, body):
         self.send_response(code)
