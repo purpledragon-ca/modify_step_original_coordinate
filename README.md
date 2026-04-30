@@ -1,82 +1,106 @@
-# usd_step_file_modify
+# modify_original_coordinate
 
-Webapp for repairing STEP files exported from Shapr3D before importing into Isaac Sim.
+Re-centre and re-orient STEP models before importing them into Isaac Sim.
+Auto-detects the bottom-centre face and canonical Z-axis, lets you confirm
+or override the choice in a browser-based 3D viewer, and exports a
+transformed `.step` plus a JSON transform record.
 
-## Workflow overview
+## Workflow
 
 ```
-Shapr3D export (.step)
-        │
-        ▼
-Repair — fix syntax errors and Z-axis orientation
-        │
-        ▼
+.step file
+   │
+   ▼
+find_bottom_center.py --ui  ──► browser viewer (face picking, preview)
+   │
+   ▼
+*_centered.step  +  transform_record.json
+   │
+   ▼
 Isaac Sim import
 ```
 
----
+## Prerequisites
 
-## STEP Repair
-
-The webapp fixes two defects that Shapr3D reliably produces in every export:
-
-| Defect | Symptom | Fix |
-|--------|---------|-----|
-| Bare-integer REAL literals (`-0`, `1`) in `DIRECTION` vectors | OpenCASCADE parser reports *"Incorrect Syntax : Fails Count : N"* | Convert to valid STEP notation (`0.`, `1.`) |
-| Global product frame set to Z-down `(0,0,−1)` | Components load with wrong rotation in Isaac Sim / Shapr3D re-import | Flip all assembly-level placement frames to Z-up |
-
-### Start the server
+OpenCascade Python bindings (`OCP`), most easily installed via cadquery:
 
 ```bash
-cd webapp
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+pip install cadquery
 ```
 
-Then open **http://localhost:8000** in a browser.
-
-### Use the UI
-
-1. Drag your `.step` file onto the drop zone (or click **browse**).
-2. Leave both checkboxes ticked (they fix the two defects described above).
-3. Click **Repair & Download**.
-4. The browser downloads `<original_name>_repaired.step`.  
-   The result box shows how many lines were fixed and how many Z-directions were flipped.
-
-### Use the API directly
+## Run
 
 ```bash
-curl -X POST http://localhost:8000/repair \
-  -F "file=@left_shelf.step" \
-  -F "fix_syntax=true" \
-  -F "fix_z=true" \
-  -o left_shelf_repaired.step
+./start.sh <step_file> [--port N]
 ```
 
-Response headers report what changed:
-
-```
-X-Repair-Summary:        54377 line(s) had bare-integer REAL literals fixed; 200 assembly Z-direction(s) flipped to Z-up
-X-Syntax-Lines-Fixed:    54377
-X-Z-Directions-Flipped:  200
-```
-
-### Run tests
+`start.sh` is a thin wrapper that runs:
 
 ```bash
-cd webapp
+python scripts/find_bottom_center.py <step_file> --ui --port N
+```
+
+It launches a local HTTP server (default port `8765`), opens
+`http://localhost:8765` in your browser, and prints auto-detected
+proposals to stdout. Press **Ctrl+C** to stop.
+
+### Example
+
+```bash
+./start.sh my_models/left_shelf.step
+./start.sh my_models/left_shelf.step --port 9000
+```
+
+### Flags (passed through to the Python script)
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--port N` | `8765` | UI/HTTP server port |
+| `--no-browser` | off | Don't auto-open a browser tab |
+| `--decimals N` | `8` | Cap exported REAL-literal precision |
+| `--surfacecurve-mode {0,1,2,3}` | `0` | OCC `write.surfacecurve.mode` |
+| `--write-props` | off | Include validation properties (larger files) |
+
+## In the UI
+
+1. Inspect the auto-detected proposals (best one highlighted).
+2. Click any face to override the chosen origin / Z-axis.
+3. Optionally dial in a Z-rotation to fix X/Y orientation.
+4. Click **Export** — the server writes the centered STEP and the
+   transform-record JSON to `../processed/<name>_centered.step`
+   (alongside a `*_transform.json`).
+
+## HTTP endpoints
+
+The server exposes a small JSON API used by the UI; useful for scripting:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET  | `/`                     | Viewer HTML |
+| GET  | `/api/model-data`       | Faces, proposals, mesh, bbox of the loaded model |
+| GET  | `/api/health`           | Liveness check |
+| GET  | `/api/loaded`           | Currently loaded STEP path |
+| POST | `/api/load`             | Load a different STEP file without restarting |
+| POST | `/api/export-step`      | Apply transform and write `*_centered.step` |
+| POST | `/api/transform-record` | Write the transform record JSON |
+
+## Tests
+
+```bash
+cd scripts
 pytest
 ```
-
----
 
 ## Project layout
 
 ```
-webapp/                 FastAPI app — STEP repair UI and API
-  main.py               Routes: GET / (UI), POST /repair
-  step_repair.py        Repair logic (syntax fix + Z-axis flip)
-  step_parser.py        STEP entity parser, matrix math
-  static/index.html     Browser UI
-  tests/                pytest suite
+start.sh                              wrapper that launches the UI
+scripts/
+  find_bottom_center.py               main tool: analysis + UI server
+  get_step_component_positions.py     auxiliary: bbox-centre per component
+  tests/                              pytest suite
+my_models/                            input .step files
+isaacsim_models/                      reference / target models
+output/                               default export destination
+urdf/                                 supporting URDF assets
 ```

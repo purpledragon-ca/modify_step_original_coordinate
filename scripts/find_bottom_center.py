@@ -734,7 +734,7 @@ def _export_transformed_step_xcaf(step_path, trsf, output_path, schema,
     shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
     free_shapes = TDF_LabelSequence()
     shape_tool.GetFreeShapes(free_shapes)
-    root_loc = TopLoc_Location(trsf)
+    identity_loc = TopLoc_Location()
 
     def component_children(label):
         ref_label = TDF_Label()
@@ -744,34 +744,40 @@ def _export_transformed_step_xcaf(step_path, trsf, output_path, schema,
         XCAFDoc_ShapeTool.GetComponents_s(label, children)
         return children
 
-    def transform_leaf_components(label, parent_loc):
+    def bake_leaf_components(label, parent_loc):
+        # Per leaf, bake `trsf * (parent_loc * old_loc)` into the geometry
+        # vertices and clear every internal placement, so vertex coordinates
+        # in the output STEP are world-frame and need no chain composition.
+        # NOTE: the bake writes back into the referred master shape. If the
+        # same master is referenced by N>1 components with different
+        # placements (true CAD instancing — not produced by Shapr3D), the
+        # master gets overwritten per instance and the result is wrong;
+        # acceptable for Shapr3D-style exports without instancing.
         children = component_children(label)
         if not children.Length():
             return False
 
-        transformed_any = False
         for j in range(1, children.Length() + 1):
             component = children.Value(j)
             old_loc = XCAFDoc_ShapeTool.GetLocation_s(component)
-            child_parent_loc = parent_loc.Multiplied(old_loc)
-            if transform_leaf_components(component, child_parent_loc):
-                transformed_any = True
-                continue
-
-            new_loc = (
-                parent_loc.Inverted()
-                .Multiplied(root_loc)
-                .Multiplied(parent_loc)
-                .Multiplied(old_loc)
-            )
-            ref_label = TDF_Label()
-            shape_tool.SetLocation(component, new_loc, ref_label)
-            transformed_any = True
-        return transformed_any
+            full_loc = parent_loc.Multiplied(old_loc)
+            if not bake_leaf_components(component, full_loc):
+                total_trsf = trsf.Multiplied(full_loc.Transformation())
+                ref_label = TDF_Label()
+                has_ref = XCAFDoc_ShapeTool.GetReferredShape_s(
+                    component, ref_label)
+                geom_label = ref_label if has_ref else component
+                leaf_shape = shape_tool.GetShape_s(geom_label)
+                builder = BRepBuilderAPI_Transform(
+                    leaf_shape, total_trsf, True)
+                builder.Build()
+                shape_tool.SetShape(geom_label, builder.Shape())
+            shape_tool.SetLocation(component, identity_loc, TDF_Label())
+        return True
 
     for i in range(1, free_shapes.Length() + 1):
         label = free_shapes.Value(i)
-        if not transform_leaf_components(label, TopLoc_Location()):
+        if not bake_leaf_components(label, TopLoc_Location()):
             shape = shape_tool.GetShape_s(label)
             builder = BRepBuilderAPI_Transform(shape, trsf, True)
             builder.Build()
